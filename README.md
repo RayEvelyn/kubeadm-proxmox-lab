@@ -36,11 +36,9 @@ After creating the agent registration via the GitLab API, install the official a
 ci_access:
   projects:
     - id: example-group/lab-manifests
-      access_as:
-        ci_job: {}
 ```
 
-Configure Kubernetes RBAC for the impersonated CI identity and its groups, grant only the target namespaces/verbs, and test `kubectl auth can-i`. Authorizing a GitLab project is one trust gate; Kubernetes RBAC is another. Keep outbound HTTPS/WebSocket access to the correct KAS endpoint and validate its TLS certificate. Self-managed KAS configuration belongs to the GitLab administration repository, not the VM token or application manifests. See [GitLab agent CI workflow](https://docs.gitlab.com/user/clusters/agent/ci_cd_workflow/) and [agent installation](https://docs.gitlab.com/user/clusters/agent/install/).
+This Community Edition-compatible example uses the agent service account's permissions. Configure that service account with only the intended namespace/verbs and test `kubectl auth can-i`; do not accept a chart's cluster-admin default. CI-job impersonation with `access_as: ci_job` is an optional Premium/Ultimate feature, so it is not assumed by this CE lab. Authorizing a GitLab project is one trust gate; Kubernetes RBAC is another. Keep outbound HTTPS/WebSocket access to the correct KAS endpoint and validate its TLS certificate. Self-managed KAS configuration belongs to the GitLab administration repository, not the VM token or application manifests. See [GitLab agent CI workflow](https://docs.gitlab.com/user/clusters/agent/ci_cd_workflow/) and [agent installation](https://docs.gitlab.com/user/clusters/agent/install/).
 
 ## Proxmox prerequisites, in plain language
 
