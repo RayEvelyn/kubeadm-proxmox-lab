@@ -20,5 +20,5 @@ deploy:
     HOMELAB_ACTION: plan
     HOMELAB_PRIVATE_REPOSITORY: "true"
   script:
-    - export TF_REPOSITORY_ID="${TF_REPOSITORY_ID:-$CI_PROJECT_ID}"
+    - export TF_REPOSITORY_ID="${TF_REPOSITORY_ID:-gitlab-$CI_PROJECT_ID}"
     - ./scripts/ci-deploy.sh

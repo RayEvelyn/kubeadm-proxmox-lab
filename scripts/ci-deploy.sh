@@ -5,8 +5,11 @@ umask 077
 [[ ${DEPLOY_ENABLED:-} == true && ${HOMELAB_PRIVATE_REPOSITORY:-} == true ]] || { echo 'Private enabled deployment repository required.' >&2; exit 1; }
 action=${HOMELAB_ACTION:-plan}
 [[ $action == plan || $action == provision || $action == deploy ]] || exit 1
-: "${TF_REPOSITORY_ID:?Set a stable numeric repository state ID}"
-[[ $TF_REPOSITORY_ID =~ ^[0-9]+$ ]] || exit 1
+if [[ $action == deploy ]]; then
+ : "${SSH_KNOWN_HOSTS:?Provide independently verified host keys before bootstrap}"
+fi
+: "${TF_REPOSITORY_ID:?Set a stable platform-prefixed repository state ID}"
+[[ $TF_REPOSITORY_ID =~ ^(github|gitlab)-[0-9]+$ ]] || exit 1
 state_root=${TF_STATE_ROOT:-/var/lib/homelab-terraform}
 [[ $state_root == /* && $state_root != / && ! -L $state_root ]] || exit 1
 mkdir -p "$state_root"
@@ -51,7 +54,6 @@ if [[ -f $state_dir/terraform.tfstate ]]; then cp -p "$state_dir/terraform.tfsta
 terraform apply -input=false "$work/plan.tfplan"
 ./scripts/inventory.sh
 [[ $action != provision ]] || { echo 'Provisioned. Verify host fingerprints before the deploy phase.'; exit 0; }
-: "${SSH_KNOWN_HOSTS:?Provide independently verified host keys before bootstrap}"
 printf '%s\n' "$SSH_KNOWN_HOSTS" > "$work/known_hosts"
 cat > "$work/config" <<EOF
 Host *
