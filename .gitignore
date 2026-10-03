@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate*
+*.tfplan
+terraform.tfvars
+.env
+.venv/
+__pycache__/
+ansible/inventory.local.*
+.secrets/
+.kube/

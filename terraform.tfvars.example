@@ -1,0 +1,13 @@
+# Documentation IPs cannot route: replace with unused addresses on your lab VLAN.
+proxmox_node = "pve-lab"
+template_vm_id = 9000
+datastore = "local-lvm"
+bridge = "vmbr0"
+gateway = "192.0.2.1"
+dns_servers = ["192.0.2.53"]
+ssh_public_keys = ["ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY lab"]
+nodes = {
+  "kube-cp1" = { vm_id = 210, address = "192.0.2.11/24", control_plane = true, cores = 4, memory_mb = 8192, disk_gb = 40 }
+  "kube-worker1" = { vm_id = 211, address = "192.0.2.12/24", control_plane = false, cores = 4, memory_mb = 8192, disk_gb = 40 }
+  "kube-worker2" = { vm_id = 212, address = "192.0.2.13/24", control_plane = false, cores = 4, memory_mb = 8192, disk_gb = 40 }
+}

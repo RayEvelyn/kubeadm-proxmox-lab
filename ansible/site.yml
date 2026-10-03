@@ -1,0 +1,216 @@
+---
+- name: Prepare dedicated Ubuntu 24.04 Kubernetes nodes
+  hosts: all
+  become: true
+  vars:
+    kubernetes_minor: v1.35
+    kubernetes_package: 1.35.9-1.1
+  tasks:
+    - name: Require supported dedicated lab hosts
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version == '24.04'
+          - groups['control_plane'] | length == 1
+    - name: Install runtime and repository tools
+      ansible.builtin.apt:
+        name: [containerd, ca-certificates, curl, gpg, conntrack, socat, python3-debian]
+        update_cache: true
+        state: present
+    - name: Disable active swap for kubelet
+      ansible.builtin.command: swapoff -a
+      changed_when: ansible_swaptotal_mb > 0
+    - name: Preserve fstab while disabling swap entries
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#\n]+\s+swap\s+.*)$'
+        replace: '# kubeadm lab: \1'
+        backup: true
+    - name: Persist kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/kubeadm-lab.conf
+        content: "overlay\nbr_netfilter\n"
+        mode: '0644'
+    - name: Load kernel modules
+      ansible.builtin.command: "modprobe {{ item }}"
+      loop: [overlay, br_netfilter]
+      changed_when: false
+    - name: Persist forwarding and bridge settings
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubeadm-lab.conf
+        content: "net.ipv4.ip_forward = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\n"
+        mode: '0644'
+      register: sysctl_config
+    - name: Activate sysctls
+      ansible.builtin.command: sysctl --system
+      when: sysctl_config.changed
+      changed_when: true
+    - name: Generate containerd configuration for installed runtime
+      ansible.builtin.command: containerd config default
+      register: containerd_default
+      changed_when: false
+    - name: Create containerd config directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+    - name: Configure CRI runtime and systemd cgroups
+      ansible.builtin.copy:
+        dest: /etc/containerd/config.toml
+        content: "{{ containerd_default.stdout | replace('SystemdCgroup = false', 'SystemdCgroup = true') }}\n"
+        mode: '0644'
+        backup: true
+      register: runtime_config
+    - name: Restart containerd when configuration changes
+      ansible.builtin.systemd_service:
+        name: containerd
+        enabled: true
+        state: "{{ 'restarted' if runtime_config.changed else 'started' }}"
+    - name: Create apt keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Download official Kubernetes repository signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor }}/deb/Release.key"
+        dest: /etc/apt/keyrings/kubernetes.asc
+        mode: '0644'
+    - name: Configure minor-scoped official package repository
+      ansible.builtin.deb822_repository:
+        name: kubeadm-lab
+        types: [deb]
+        uris: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_minor }}/deb/"
+        suites: ['/']
+        signed_by: /etc/apt/keyrings/kubernetes.asc
+        state: present
+    - name: Collect installed package facts
+      ansible.builtin.package_facts:
+        manager: apt
+    - name: Refuse an implicit Kubernetes upgrade or downgrade
+      ansible.builtin.assert:
+        that:
+          - item not in ansible_facts.packages or ansible_facts.packages[item][0].version == kubernetes_package
+        fail_msg: Plan a documented kubeadm upgrade rather than changing pins on an existing cluster.
+      loop: [kubeadm, kubelet, kubectl]
+    - name: Install exact Kubernetes package versions
+      ansible.builtin.apt:
+        name:
+          - "kubeadm={{ kubernetes_package }}"
+          - "kubelet={{ kubernetes_package }}"
+          - "kubectl={{ kubernetes_package }}"
+        update_cache: true
+        state: present
+    - name: Hold Kubernetes packages for explicit future upgrades
+      ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
+      changed_when: false
+    - name: Enable kubelet (becomes healthy after init or join)
+      ansible.builtin.systemd_service:
+        name: kubelet
+        enabled: true
+        state: started
+
+- name: Initialize the single control plane and install Calico
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Write versioned kubeadm configuration
+      ansible.builtin.copy:
+        dest: /root/kubeadm-lab.yml
+        mode: '0600'
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: InitConfiguration
+          localAPIEndpoint:
+            advertiseAddress: {{ ansible_host }}
+            bindPort: 6443
+          nodeRegistration:
+            criSocket: unix:///run/containerd/containerd.sock
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta4
+          kind: ClusterConfiguration
+          kubernetesVersion: v1.35.9
+          networking:
+            podSubnet: 10.244.0.0/16
+            serviceSubnet: 10.96.0.0/12
+          apiServer:
+            certSANs:
+              - "{{ ansible_host }}"
+            extraArgs:
+              - name: feature-gates
+                value: MutatingAdmissionPolicy=true
+          ---
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+    - name: Initialize once (no reset or certificate regeneration)
+      ansible.builtin.command: kubeadm init --config /root/kubeadm-lab.yml
+      args:
+        creates: /etc/kubernetes/admin.conf
+    - name: Download pinned Calico v3 CRDs for Kubernetes 1.35
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/v3_projectcalico_org-v1beta1.yaml
+        dest: /root/calico-v3-crds.yml
+        mode: '0600'
+    - name: Download pinned Tigera operator
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/tigera-operator.yaml
+        dest: /root/tigera-operator.yml
+        mode: '0600'
+    - name: Apply Calico CRDs and operator
+      ansible.builtin.command: "kubectl --kubeconfig=/etc/kubernetes/admin.conf apply --server-side -f {{ item }}"
+      loop: [/root/calico-v3-crds.yml, /root/tigera-operator.yml]
+      changed_when: false
+    - name: Wait for installation CRD
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Established crd/installations.operator.tigera.io --timeout=120s
+      changed_when: false
+    - name: Configure VXLAN networking without BGP or IPIP
+      ansible.builtin.copy:
+        dest: /root/calico-installation.yml
+        mode: '0600'
+        content: |
+          apiVersion: operator.tigera.io/v1
+          kind: Installation
+          metadata:
+            name: default
+          spec:
+            calicoNetwork:
+              bgp: Disabled
+              ipPools:
+                - cidr: 10.244.0.0/16
+                  blockSize: 26
+                  encapsulation: VXLAN
+                  natOutgoing: Enabled
+                  nodeSelector: all()
+    - name: Apply lab network configuration
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply --server-side -f /root/calico-installation.yml
+      changed_when: false
+    - name: Generate expiring join command (never log tokens)
+      ansible.builtin.command: kubeadm token create --ttl 2h --print-join-command
+      register: join_command
+      changed_when: false
+      no_log: true
+
+- name: Join workers without resetting existing nodes
+  hosts: workers
+  become: true
+  tasks:
+    - name: Join once
+      ansible.builtin.command: "{{ hostvars[groups['control_plane'][0]].join_command.stdout }} --cri-socket unix:///run/containerd/containerd.sock"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      no_log: true
+
+- name: Verify node readiness and Calico reconciliation
+  hosts: control_plane
+  become: true
+  tasks:
+    - name: Wait for all Kubernetes nodes
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait nodes --all --for=condition=Ready --timeout=600s
+      changed_when: false
+    - name: Wait for Calico availability
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait tigerastatus/calico --for=condition=Available --timeout=600s
+      changed_when: false
+    - name: Wait for CoreDNS
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system rollout status deployment/coredns --timeout=300s
+      changed_when: false
