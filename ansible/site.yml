@@ -14,9 +14,14 @@
           - groups['control_plane'] | length == 1
     - name: Install runtime and repository tools
       ansible.builtin.apt:
-        name: [containerd, ca-certificates, curl, gpg, conntrack, socat, python3-debian]
+        name: [containerd, ca-certificates, curl, gpg, conntrack, socat, python3-debian, chrony]
         update_cache: true
         state: present
+    - name: Start clock synchronization
+      ansible.builtin.systemd_service:
+        name: chrony
+        enabled: true
+        state: started
     - name: Disable active swap for kubelet
       ansible.builtin.command: swapoff -a
       changed_when: ansible_swaptotal_mb > 0
@@ -205,6 +210,16 @@
   hosts: control_plane
   become: true
   tasks:
+    - name: Read registered node count
+      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes -o json
+      register: cluster_nodes
+      until: (cluster_nodes.stdout | from_json)['items'] | length >= (groups['all'] | length)
+      retries: 24
+      delay: 5
+      changed_when: false
+    - name: Require every intended node and no unexpected nodes
+      ansible.builtin.assert:
+        that: (cluster_nodes.stdout | from_json)['items'] | length == (groups['all'] | length)
     - name: Wait for all Kubernetes nodes
       ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait nodes --all --for=condition=Ready --timeout=600s
       changed_when: false
