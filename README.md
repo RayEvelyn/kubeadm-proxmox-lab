@@ -1,5 +1,7 @@
 # Learn Kubernetes with kubeadm on Proxmox or bare metal
 
+Start with [GitOps, the bootstrap order, and why the repos are separate](docs/START-HERE.md).
+
 Build a small private lab that teaches what a Kubernetes distribution normally hides: node preparation, CRI runtime, kubelet, control plane, worker registration and pod networking. Terraform clones the guests; Ansible installs Kubernetes. Start with one control plane and two workers. This teaches scheduling and multi-node networking while remaining easy to rebuild; one control plane is a single point of failure.
 
 The **API server** accepts authenticated requests; **etcd** stores cluster state; **scheduler** chooses a node; **controllers** reconcile desired state; **kubelet** manages pods on each node; **containerd** runs their containers. A **CNI** gives pods networking. Kubernetes needs both the node network and separate non-overlapping pod/service address spaces.
