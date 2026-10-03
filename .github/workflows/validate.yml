@@ -1,0 +1,26 @@
+name: Validate
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+      - run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+          python3 -m venv /tmp/ansible-validation
+          /tmp/ansible-validation/bin/pip install ansible-core==2.21.4
+          /tmp/ansible-validation/bin/ansible-playbook -i ansible/inventory.baremetal.example.yml ansible/site.yml --syntax-check
+          for script in scripts/*.sh; do bash -n "$script"; done
+          shellcheck scripts/*.sh

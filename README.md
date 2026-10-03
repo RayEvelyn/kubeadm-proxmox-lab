@@ -120,3 +120,44 @@ For stateful labs, define storage and backups before deploying databases. Back u
 - [Calico supported Kubernetes versions](https://docs.tigera.io/calico/latest/getting-started/kubernetes/requirements)
 - [Calico 3.33 on-premises installation and feature gate](https://docs.tigera.io/calico/latest/getting-started/kubernetes/self-managed-onprem/onpremises)
 - [Kubernetes runtime/cgroup configuration](https://kubernetes.io/docs/setup/production-environment/container-runtimes/)
+
+## Why the CI jobs have separate phases
+
+Terraform owns VM allocation and cloud-init inputs; Ansible owns host bootstrap. Kubernetes manifests and Helm own workloads inside the resulting cluster. GitLab KAS connects an agent to GitLab for authorized Kubernetes access without exposing port 6443 publicly; it does not provision VMs or bypass Kubernetes RBAC. Community Edition uses the agent service account scope; CI job impersonation requires the applicable Premium/Ultimate tier.
+
+The public repository validates code on an unprivileged hosted GitHub runner. Its deployment job is deliberately disabled: self-hosted runners belong in your own private deployment repository, never a public fork that accepts outside code. `workflow_dispatch`, a private repository, the default branch, and `DEPLOY_ENABLED=true` must all match before deployment runs. The `homelab` environment can enforce reader-owned approval and secret policies; creating its name alone does not configure approvals. GitLab uses a private project, protected default branch, manual job, protected `homelab` runner and `resource_group`. Configure a separate unprivileged `validation` runner for GitLab validation. Do not share the deployment runner with untrusted projects.
+
+Create a private copy using the CLI, after reviewing the source:
+
+```sh
+git clone https://github.com/RayEvelyn/kubeadm-proxmox-lab.git
+cd kubeadm-proxmox-lab
+gh repo create YOUR-OWNER/kubeadm-proxmox-lab-deployment --private --source . --remote deployment --push
+# Target this private repository for subsequent gh secret/variable commands.
+gh variable set DEPLOY_ENABLED --body false --repo YOUR-OWNER/REPO
+```
+
+For GitLab, create a private project with `glab repo create --private`, push the reviewed checkout there, protect its default branch, and register a protected deployment runner. Store secrets as masked, protected environment-scoped CI variables; public settings belong in regular variables. Importing source does not transfer GitHub secrets, runners or state. Set `HOMELAB_ACTION` when starting the GitLab manual job; it defaults to `plan`.
+
+### Persistent Terraform state and trusted SSH
+
+Provision one fixed Linux runner with Terraform 1.16.4, Python 3/PyYAML, Ansible core 2.21.4, OpenSSH, `flock`, and this repository's documented Kubernetes/Helm clients. It needs private network routes to the trusted Proxmox API, VM SSH endpoints, and (for Rancher) management API. Give its dedicated account a private state directory, for example:
+
+```sh
+sudo install -d -m 700 -o "$USER" -g "$(id -gn)" /var/lib/homelab-terraform
+```
+
+`TF_STATE_ROOT` defaults to that persistent directory; each `TF_REPOSITORY_ID` receives its own state and lock. State never goes in checkout, temporary files, CI caches or artifacts. Back up the entire private state directory securely outside CI and test recovery; state contains sensitive infrastructure data. Before moving runner or platform, restore that same state and explicitly keep the same numeric `TF_REPOSITORY_ID`. Do not let GitHub and GitLab initialize independent states for the same VMs. The file lock coordinates both platforms only when they use the same fixed runner and directory. Restrict access to that runner and its backups.
+
+Configure repository/environment variables: `HOMELAB_TFVARS_JSON` containing the reviewed example tfvars as JSON, `PROXMOX_VE_ENDPOINT`, optional `PROXMOX_CA_PEM` (public CA certificate), and optional `TF_STATE_ROOT`/`TF_REPOSITORY_ID`. Secrets: scoped `PROXMOX_VE_API_TOKEN`, dedicated unencrypted automation `SSH_PRIVATE_KEY`, and, for deploy only, verified `SSH_KNOWN_HOSTS`. The helper derives the public key and refuses tfvars without the matching key. Temporary key/config/CA files use private permissions and are removed on exit; no global SSH configuration or system trust store is replaced. Never put credentials in tfvars JSON. Supply secrets with `gh secret set NAME --repo YOUR-OWNER/REPO < protected-file`; use `gh variable set NAME --repo ... --body ...` for nonsecret settings.
+
+Run `plan` first. `provision` saves and applies a fresh plan, writes inventory, and stops before any SSH connection. For newly created hosts, obtain SSH host public keys through a trusted Proxmox console/API guest-agent channel, e.g. `qm guest exec VMID -- cat /etc/ssh/ssh_host_ed25519_key.pub` on the trusted Proxmox host. Compare those keys with a candidate `ssh-keyscan` output; keyscan alone is not authentication. Store the verified host/IP lines as `SSH_KNOWN_HOSTS`, then run `deploy`. Deployment applies its own saved plan, uses strict pinned SSH host checking, and bootstraps only the reviewed dedicated VMs. Existing `prevent_destroy` guards remain in force. Plans and temporary files are removed; persistent state is retained.
+
+```sh
+gh variable set DEPLOY_ENABLED --body true --repo YOUR-OWNER/REPO
+gh workflow run deploy.yml --repo YOUR-OWNER/REPO -f action=plan
+# Review the run, then explicitly dispatch provision or deploy.
+```
+
+
+CI configuration has been checked locally as recorded in VALIDATION.md where present. No example workflow has been run against your infrastructure. The private runner prerequisites, network trust, secret values and first real deployment remain reader responsibilities. Official references: [GitHub runner guidance](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job), [GitLab protected/manual jobs](https://docs.gitlab.com/ci/jobs/job_control/), [Terraform local backend](https://developer.hashicorp.com/terraform/language/backend/local).

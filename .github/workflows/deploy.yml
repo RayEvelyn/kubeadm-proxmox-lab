@@ -1,0 +1,36 @@
+name: Deploy private lab
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Review plan first; provision stops before SSH; deploy bootstraps the lab'
+        type: choice
+        options: [plan, provision, deploy]
+        default: plan
+permissions:
+  contents: read
+concurrency:
+  group: homelab-${{ github.repository_id }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.event.repository.private && vars.DEPLOY_ENABLED == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, homelab]
+    environment: homelab
+    env:
+      HOMELAB_ACTION: ${{ inputs.action }}
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+      HOMELAB_PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
+      TF_REPOSITORY_ID: ${{ vars.TF_REPOSITORY_ID || github.repository_id }}
+      TF_STATE_ROOT: ${{ vars.TF_STATE_ROOT }}
+      HOMELAB_TFVARS_JSON: ${{ vars.HOMELAB_TFVARS_JSON }}
+      PROXMOX_VE_ENDPOINT: ${{ vars.PROXMOX_VE_ENDPOINT }}
+      PROXMOX_CA_PEM: ${{ vars.PROXMOX_CA_PEM }}
+      PROXMOX_VE_API_TOKEN: ${{ secrets.PROXMOX_VE_API_TOKEN }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: ./scripts/ci-deploy.sh
